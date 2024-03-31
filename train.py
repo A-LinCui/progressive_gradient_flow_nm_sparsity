@@ -47,11 +47,15 @@ def __repr__(self):
 
 
 class SparseType(str, enum.Enum):
-  """Pruning types dataclass."""
-  DENSE = 'DENSE'
-  STRUCTURED_NM = 'STRUCTURED_NM'
-  UNSTRUCTURED = 'UNSTRUCTURED'
-  SRSTE = 'SRSTE'
+    """
+    Pruning types dataclass.
+    """
+
+    DENSE = "DENSE"
+    STRUCTURED_NM = "STRUCTURED_NM"
+    UNSTRUCTURED = "UNSTRUCTURED"
+    SRSTE = "SRSTE"
+
 
 def restricted_float(x, min_value, max_value):
     try:

@@ -107,7 +107,7 @@ class SparseSRSTE(autograd.Function):
         ctx.mask = w_b
         ctx.decay = decay
 
-        return output*w_b 
+        return output * w_b 
 
 
     @staticmethod
@@ -130,7 +130,7 @@ class StepDecay(autograd.Function):
 
         ctx.mask = w_b
         ctx.decay = 0.0002
-        return output*w_b
+        return output * w_b
 
 
     @staticmethod
@@ -158,7 +158,7 @@ class LinearDecay(autograd.Function):
             0.0)
         if(current_step_num%1000==0):
             print("Linear mask decay value:", mask_decay_value )
-        return output*(w_b + (1-w_b)*mask_decay_value)
+        return output * (w_b + (1 - w_b) * mask_decay_value)
 
 
 ## For Decay sparse, we are sending gradients as it during back propogation,
@@ -183,8 +183,8 @@ class ExponentialDecay(autograd.Function):
         mask_decay_value = math.exp(-1*exp_decay_coef*current_step_num) 
         if(current_step_num%1000==0):
             print("Exponential Mask decay value:", mask_decay_value)
-       return output*(w_b + (1-w_b)*mask_decay_value)
 
+        return output * (w_b + (1 - w_b) * mask_decay_value)
 
     @staticmethod
     def backward(ctx, grad_output):
