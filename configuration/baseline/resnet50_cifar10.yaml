@@ -1,0 +1,29 @@
+# ---- Model Settings ----
+model: resnet50
+pretrained: true
+# ---- End of Model Settings ----
+
+# ---- Train Settings ----
+n_sparsity: 2
+m_sparsity: 4 
+sparsity_type: STRUCTURED_NM
+decay_type: EXP
+decay_coef: 0.0008
+dense_steps: 0
+fine_tune_steps: 0
+structure_decay_flag: false
+structure_decay_type: fine
+
+dense_epochs: 0.3
+fine_tune_epochs: 0.3
+total_epochs: 30
+
+sparse_dim: ROW
+sparsity_loc: C
+# ---- End of Train Settings ----
+
+# ---- Dataset Settings ----
+data_dir: /share/public-local/datasets
+dataset: torch/CIFAR10
+dataset_download: true
+# ---- End of Dataset Settings ----
