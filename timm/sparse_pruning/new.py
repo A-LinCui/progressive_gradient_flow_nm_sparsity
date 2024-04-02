@@ -39,7 +39,7 @@ def unstructured_weight_prune(weight: Tensor, ratio: float) -> Tensor:
     return mask
 
 
-def get_sparse_mask(weight: Tensor, N, M, ratio: float, **kwargs):
+def get_sparse_mask(weight: Tensor, ratio: float, **kwargs):
     """
     # Calculate the sparsity mask.
 
@@ -48,7 +48,20 @@ def get_sparse_mask(weight: Tensor, N, M, ratio: float, **kwargs):
     Args:
         weight (Tensor): The weight to be pruned.
         ratio (float): Unstructured pruning ratio.
+
+    Returns:
+        Tensor: The N:M pruned weight.
+        Tensor: The corresponding N:M pruning binary mask.
     """
+
+    # PRE-DEFINED HYPER-PARAMETERS
+    weight_unit = 8
+    block_w = 2 * weight_unit
+    block_h = 16
+    block_size = block_w * block_h
+    sparsity_option = [0, 1, 2, 4, 8]
+    # The possible preserved weights of the block
+    sparsity_array = np.array(sparsity_option) * 2 * block_h
 
     # Step 1: Generate the mask for unstructured pruning
     # The scheme utilises this mask to determine N:M pruning settings
@@ -79,14 +92,11 @@ def get_sparse_mask(weight: Tensor, N, M, ratio: float, **kwargs):
     unstructured_mask_padded = F.pad(
         unstructured_mask_mtx.unsqueeze(0), (0, W_pad, 0, H_pad), value = 0.).squeeze(0)
 
-    # Step 5: Calculate the possible preserved weights of the block
-    sparsity_array = np.array(sparsity_option) * 2 * block_h
-
-    # Step 6: Generate the N:M pruning mask
+    # Step 5: Generate the N:M pruning mask
     mask = torch.zeros_like(weight_padded)  # Initialize the mask
     H_block_num = int((reshaped_H + H_pad) / block_h)
     W_block_num = int((reshaped_W + W_pad) / block_w)
-    sp_opt_mtx = torch.zeros((H_block_num, W_block_num)) - 1
+    # sp_opt_mtx = torch.zeros((H_block_num, W_block_num)) - 1
 
     for i in range(H_block_num):
         for j in range(W_block_num):
@@ -100,28 +110,37 @@ def get_sparse_mask(weight: Tensor, N, M, ratio: float, **kwargs):
 
             # Point 1: Get the best sparsity choice
             preserved_num = unstructured_mask_sub_mtx.sum()
-            sparsity_choice_idx = np.argmin(np.abs(preserved_len.numpy() - sparsity_array))
+            sparsity_choice_idx = np.argmin(np.abs(preserved_num.item() - sparsity_array))
             sparsity_choice = sparsity_option[sparsity_choice_idx]
-            sp_opt_mtx[i, j] = sparsity_choice
+            # sp_opt_mtx[i, j] = sparsity_choice
 
             # TODO: Do transpose choice
             unstructured_mask_sub_array = unstructured_mask_sub_mtx.reshape(-1)
-            weight_sub_array = weight_sub_mtx.reshape(-1)
+            # weight_sub_array = weight_sub_mtx.reshape(-1)
 
             # Point 2: Fill the block mask
-            sub_mask = torch.zeros_like(unstructured_mask_sub_array)
-            for k in range(int(len(weight_sub_array) / weight_unit)):
-                mask_unit = torch.zeros(weight_unit)
-                frac_weight = torch.abs(weight_sub_array[k * weight_unit:(k + 1) * weight_unit])
-                _, sort_indices = torch.sort(frac_weight, descending = True)
-                mask_unit[sort_indices[:block_sparsity]] = 1.
-                sub_mask[k * weight_unit: (k + 1) * weight_unit] = mask_unit
+            weight_sub_array = weight_sub_mtx.reshape(-1, weight_unit)
+            abs_weight = torch.abs(weight_sub_array)
+            _, sorted_indices = torch.sort(abs_weight, descending = True)
+            sub_mask = torch.zeros_like(weight_sub_array)
+            for k, indices in enumerate(sorted_indices):
+                sub_mask[k][indices[:sparsity_choice]] = 1.
             sub_mask = sub_mask.reshape(block_h, block_w)
 
             mask[h_left : h_right, w_left : w_right] = sub_mask
 
-    return
-"""
+    # Step 7: Recover the original shape
+    mask = mask[: reshaped_H, : reshaped_W].clone()
+    mask = mask.reshape(C_out, C_in, H, W) if len(weight.shape) == 4 else mask.reshaped(C_out, C_in)
+    pruned_weight = mask * weight
+
+    return pruned_weight, mask
+
+weight = torch.randn((128, 64, 3, 3)).to("cuda")
+ratio = 0.5
+w, m = get_sparse_mask(weight, ratio)
+import ipdb
+ipdb.set_trace()
 
 
 def get_sparse_mask(weight, N, M, sparsity_rate=0.0, isconv=False, sparse_dim = 0):
