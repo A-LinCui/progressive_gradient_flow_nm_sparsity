@@ -31,6 +31,10 @@ def unstructured_weight_prune(weight: Tensor, ratio: float) -> Tensor:
         >>> weight = torch.randn((3, 16, 16))
         >>> mask = unstructured_weight_prune(weight, ratio = 0.5)
     """
+
+    if ratio == 0.:
+        return torch.ones_like(weight).type_as(weight)
+
     num_weight = weight.numel()
     num_prune = int(num_weight * ratio)
     abs_weight = weight.abs()
