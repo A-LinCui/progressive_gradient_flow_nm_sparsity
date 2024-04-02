@@ -19,6 +19,7 @@ import sys
 
 
 def get_sparse_mask(weight, N, M, sparsity_rate=0.0, isconv=False, sparse_dim = 0):
+
     length = weight.numel()
         
     if sparsity_rate > 0.0:
@@ -35,7 +36,6 @@ def get_sparse_mask(weight, N, M, sparsity_rate=0.0, isconv=False, sparse_dim = 
             w_b = torch.ones(weight_temp.shape, device=weight_temp.device)
             w_b = w_b.scatter(dim=1, index=index, value=0)
             w_b = torch.t(w_b.reshape(weight.shape[1],weight.shape[0]))
-            # print("mask:",w_b)
         else:                       ## Row-wise N:M sparse
             weight_temp = weight.detach().abs().reshape(group, M)
             index = torch.argsort(weight_temp, dim=1)[:, :int(M-N)]
