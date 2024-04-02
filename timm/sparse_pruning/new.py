@@ -114,19 +114,23 @@ def get_sparse_mask(weight: Tensor, ratio: float, **kwargs):
             sparsity_choice = sparsity_option[sparsity_choice_idx]
             # sp_opt_mtx[i, j] = sparsity_choice
 
-            # TODO: Do transpose choice
-            unstructured_mask_sub_array = unstructured_mask_sub_mtx.reshape(-1)
-            # weight_sub_array = weight_sub_mtx.reshape(-1)
+            # Point 2: Generate the mask
+            def get_n_m_sparse_mask(transpose: bool = False):
+                frac_weight = weight_sub_mtx.T if transpose else weight_sub_mtx
+                frac_weight = torch.abs(frac_weight.reshape(-1, weight_unit))
+                _, sorted_indices = torch.sort(frac_weight, descending = True)
+                sub_mask = torch.zeros_like(frac_weight)
+                for k, indices in enumerate(sorted_indices):
+                    sub_mask[k][indices[:sparsity_choice]] = 1.
+                sub_mask = sub_mask.reshape(block_h, block_w)
+                sub_mask = sub_mask.T if transpose else sub_mask
+                confidence = (sub_mask == unstructured_mask_sub_mtx).sum().item() / sub_mask.numel()
+                return sub_mask, confidence
 
-            # Point 2: Fill the block mask
-            weight_sub_array = weight_sub_mtx.reshape(-1, weight_unit)
-            abs_weight = torch.abs(weight_sub_array)
-            _, sorted_indices = torch.sort(abs_weight, descending = True)
-            sub_mask = torch.zeros_like(weight_sub_array)
-            for k, indices in enumerate(sorted_indices):
-                sub_mask[k][indices[:sparsity_choice]] = 1.
-            sub_mask = sub_mask.reshape(block_h, block_w)
-
+            sub_mask_1, confidence_1 = get_n_m_sparse_mask(False)
+            sub_mask_2, confidence_2 = get_n_m_sparse_mask(True)
+            sub_mask = sub_mask_1 if confidence_1 > confidence_2 else sub_mask_2
+            # print(confidence_1, confidence_2)
             mask[h_left : h_right, w_left : w_right] = sub_mask
 
     # Step 7: Recover the original shape
@@ -136,12 +140,13 @@ def get_sparse_mask(weight: Tensor, ratio: float, **kwargs):
 
     return pruned_weight, mask
 
+
 weight = torch.randn((128, 64, 3, 3)).to("cuda")
-ratio = 0.5
+ratio = 0.8
 w, m = get_sparse_mask(weight, ratio)
+print(m.sum() / m.numel())
 import ipdb
 ipdb.set_trace()
-
 
 def get_sparse_mask(weight, N, M, sparsity_rate=0.0, isconv=False, sparse_dim = 0):
 
