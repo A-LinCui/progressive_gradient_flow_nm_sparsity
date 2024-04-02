@@ -52,6 +52,11 @@ def get_sparse_mask(weight: Tensor, ratio: float, **kwargs):
     Returns:
         Tensor: The N:M pruned weight.
         Tensor: The corresponding N:M pruning binary mask.
+
+    Examples::
+        >>> module = nn.Conv2d(64, 128, (3, 3)).to("cuda")
+        >>> pruned_weight, mask = get_sparse_mask(module.weight, ratio = 0.5)
+        >>> actual_sparsity = 1 - mask.sum().item() / mask.numel()
     """
 
     # PRE-DEFINED HYPER-PARAMETERS
