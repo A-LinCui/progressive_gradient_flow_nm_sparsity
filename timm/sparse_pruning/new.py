@@ -147,15 +147,6 @@ def get_sparse_mask(weight: Tensor, ratio: float, **kwargs) -> Tuple[Tensor, Ten
 
     return pruned_weight, mask
 
-"""
-weight = torch.randn((128, 64, 3, 3)).to("cuda")
-ratio = 0.8
-w, m = get_sparse_mask(weight, ratio)
-print(m.sum() / m.numel())
-import ipdb
-ipdb.set_trace()
-"""
-
 
 class SparseStrategy(autograd.Function):
     """
@@ -190,7 +181,7 @@ class SparseStrategy(autograd.Function):
         return grad_output * mask, None, None, None, None, None
 
 
-class SparseConv2D(nn.Conv2d):
+class SparseConv2d(nn.Conv2d):
 
     def __init__(
         self,
@@ -203,23 +194,15 @@ class SparseConv2D(nn.Conv2d):
         groups = 1,
         bias: bool = True,
         padding_mode: str = "zeros",
-        sparseConfig: dict = None,
+        sparsity_rate: float = 0.5,
         **kwargs
     ) -> None:
 
-        self.sparsity_rate = sparseConfig.prune_rate
-        self.decay_coef = sparseConfig.decay_coef
+        self.sparsity_rate = sparsity_rate
         self.current_step_num = 0
         self.current_epoch = 0
 
-        ## TBD, update these from real parameters in training run.
-        self.dense_epochs = sparseConfig.dense_epochs
-        self.fine_tune_epochs = sparseConfig.fine_tune_epochs
-        self.total_epochs = sparseConfig.total_epochs
-
-        self.structure_decay_config = get_decay_config(sparseConfig)
-
-        super(SparseConv2D, self).__init__(
+        super(SparseConv2d, self).__init__(
             in_channels,
             out_channels,
             kernel_size,
@@ -234,16 +217,16 @@ class SparseConv2D(nn.Conv2d):
 
         self.mask = None
 
-    def get_sparse_weights(self):
+    def get_sparse_weights(self) -> Tensor:
         weight, self.mask = SparseStrategy.apply(self.weight, self.sparsity_rate, self.mask)
         return weight
 
-    def forward(self, x, current_step_num = 0,current_epoch=0):
+    def forward(self, x: Tensor, current_step_num: int = 0, current_epoch: int = 0) -> Tensor:
         w = self.get_sparse_weights()
         x = F.conv2d(x, w, self.bias, self.stride, self.padding, self.dilation, self.groups)
         return x
 
-    def __return_sparse_weights__(self):
+    def __return_sparse_weights__(self) -> Tensor:
         return self.get_sparse_weights() 
 
     @property
@@ -292,5 +275,16 @@ def test_sparse_linear() -> None:
     print(module.actual_sparse_ratio)
 
 
+def test_sparse_conv() -> None:
+    device = torch.device("cuda")
+    module = SparseConv2d(64, 128, (3, 3), sparsity_rate = 0.6).to(device)
+    input = torch.randn((64, 32, 32)).to(device)
+    output = module(input)
+    loss = output.sum()
+    loss.backward()
+    print(module.actual_sparse_ratio)
+
+
 if __name__ == "__main__":
     test_sparse_linear()
+    test_sparse_conv()
