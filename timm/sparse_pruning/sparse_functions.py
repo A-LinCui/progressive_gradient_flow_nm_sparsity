@@ -240,18 +240,8 @@ class SparseConv2d(nn.Conv2d):
         self.current_step_num = 0
         self.current_epoch = 0
 
-        self.mask = None
-
-    def state_dict(self) -> Dict[str, Tensor]:
-        """
-        Get the state dict.
-
-        Returns:
-            Dict[str, Tensor]: The state dict.
-        """
-        state_dict = super().state_dict()
-        state_dict["mask"] = self.mask
-        return state_dict
+        self.mask = nn.Parameter(torch.ones((1)))
+        self.to_init_mask = True
 
     def get_sparse_weights(self) -> Tensor:
         """
@@ -261,7 +251,10 @@ class SparseConv2d(nn.Conv2d):
             Tensor: The pruned weight.
         """
         update = self.current_step_num % self.mask_update_every_step_num == 0
-        weight, self.mask = SparseStrategy.apply(self.weight, self.sparsity_rate, self.mask, update)
+        weight, mask = SparseStrategy.apply(
+            self.weight, self.sparsity_rate, None if self.to_init_mask else self.mask, update)
+        self.mask = nn.Parameter(mask)
+        self.to_init_mask = False
         return weight
 
     def forward(self, input: Tensor, current_step_num: int = 0, current_epoch: int = 0) -> Tensor:
@@ -330,18 +323,8 @@ class SparseLinear(nn.Linear):
         self.current_step_num = 0
         self.current_epoch = 0
 
-        self.mask = None
-
-    def state_dict(self) -> Dict[str, Tensor]:
-        """
-        Get the state dict.
-
-        Returns:
-            Dict[str, Tensor]: The state dict.
-        """
-        state_dict = super().state_dict()
-        state_dict["mask"] = self.mask
-        return state_dict
+        self.mask = nn.Parameter(torch.ones((1)))
+        self.to_init_mask = True
 
     def get_sparse_weights(self) -> Tensor:
         """
@@ -351,7 +334,10 @@ class SparseLinear(nn.Linear):
             Tensor: The pruned weight.
         """
         update = self.current_step_num % self.mask_update_every_step_num == 0
-        weight, self.mask = SparseStrategy.apply(self.weight, self.sparsity_rate, self.mask, update)
+        weight, mask = SparseStrategy.apply(
+            self.weight, self.sparsity_rate, None if self.to_init_mask else self.mask, update)
+        self.mask = nn.Parameter(mask)
+        self.to_init_mask = False
         return weight
 
     def forward(self, input: Tensor, current_step_num: int = 0, current_epoch: int = 0) -> Tensor:
