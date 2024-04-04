@@ -4,9 +4,9 @@ Sparsity functions in PyTorch.
 Copyright (c) 2024 Junbo Zhao
 """
 
-# pylint: disable=no-member,invalid-name,redefined-builtin,not-callable,too-many-arguments,unused-argument,missing-function-docstring,abstract-method,cell-var-from-loop,too-many-locals,arguments-differ
+# pylint: disable=no-member,invalid-name,redefined-builtin,not-callable,too-many-arguments,unused-argument,missing-function-docstring,abstract-method,cell-var-from-loop,too-many-locals,arguments-differ,unsupported-assignment-operation
 
-from typing import Tuple
+from typing import Tuple, Dict
 
 import numpy as np
 import torch
@@ -148,8 +148,9 @@ def get_sparse_mask(weight: Tensor, ratio: float) -> Tuple[Tensor, Tensor]:
     # Step 7: Recover the original shape
     mask = mask[: reshaped_H, : reshaped_W]
     mask = mask.reshape(C_out, C_in, H, W) if len(weight.shape) == 4 else mask.reshape(C_out, C_in)
-    pruned_weight = mask * weight
+    mask = mask.data
 
+    pruned_weight = mask * weight
     return pruned_weight, mask
 
 
@@ -241,6 +242,17 @@ class SparseConv2d(nn.Conv2d):
 
         self.mask = None
 
+    def state_dict(self) -> Dict[str, Tensor]:
+        """
+        Get the state dict.
+
+        Returns:
+            Dict[str, Tensor]: The state dict.
+        """
+        state_dict = super().state_dict()
+        state_dict["mask"] = self.mask
+        return state_dict
+
     def get_sparse_weights(self) -> Tensor:
         """
         Get the sparse weight.
@@ -319,6 +331,17 @@ class SparseLinear(nn.Linear):
         self.current_epoch = 0
 
         self.mask = None
+
+    def state_dict(self) -> Dict[str, Tensor]:
+        """
+        Get the state dict.
+
+        Returns:
+            Dict[str, Tensor]: The state dict.
+        """
+        state_dict = super().state_dict()
+        state_dict["mask"] = self.mask
+        return state_dict
 
     def get_sparse_weights(self) -> Tensor:
         """
