@@ -4,9 +4,9 @@ Sparsity functions in PyTorch.
 Copyright (c) 2024 Junbo Zhao
 """
 
+# pylint: disable=no-member,invalid-name,redefined-builtin,not-callable,too-many-arguments,unused-argument,missing-function-docstring,abstract-method,cell-var-from-loop,too-many-locals,arguments-differ
+
 from typing import Tuple
-import sys
-import math
 
 import numpy as np
 import torch
@@ -71,8 +71,6 @@ def get_sparse_mask(weight: Tensor, ratio: float) -> Tuple[Tensor, Tensor]:
     # Step 1: Generate the mask for unstructured pruning
     # The scheme utilises this mask to determine N:M pruning settings
     unstructured_mask = unstructured_weight_prune(weight, ratio = ratio)
-    # Apply the mask to get the pre-pruned weight
-    unstructured_weight = weight * unstructured_mask
 
     # Step 2: Record the original shape of the weight
     if len(weight.shape) == 4:  # The weight belongs to a 2D-convolution
@@ -82,13 +80,12 @@ def get_sparse_mask(weight: Tensor, ratio: float) -> Tuple[Tensor, Tensor]:
         C_out, C_in = weight.shape
         reshaped_W = C_in
     else:  # The weight is invalid
-        raise ValueError("Invalid weight shape: {}".format(weight.shape))
+        raise ValueError(f"Invalid weight shape: {weight.shape}")
     reshaped_H = C_out
 
     # Step 3: Reshape the weight to a Tensor with shape (C_out, X)
     weight_mtx = weight.reshape(reshaped_H, reshaped_W)
     unstructured_mask_mtx = unstructured_mask.reshape(reshaped_H, reshaped_W)
-    pruned_unstructured_weight = unstructured_weight.reshape(reshaped_H, reshaped_W)
 
     # Step 4: Pad the reshaped matrix to integral multiple of the block size
     W_pad = block_w - reshaped_W % block_w
@@ -199,6 +196,14 @@ class SparseStrategy(autograd.Function):
 
 
 class SparseConv2d(nn.Conv2d):
+    """
+    2D convolution with the proposed pruning scheme.
+
+    Args:
+        sparsity_rate (float): The target sparsity rate. Default: 0.5.
+        mask_update_every_step_num (int): The number of training steps to update
+                                          the mask once. Default: 2000.
+    """
 
     def __init__(
         self,
@@ -212,10 +217,10 @@ class SparseConv2d(nn.Conv2d):
         bias: bool = True,
         padding_mode: str = "zeros",
         sparsity_rate: float = 0.5,
-        mask_update_every_step_num: int = 2000
+        mask_update_every_step_num: int = 2000,
         **kwargs
     ) -> None:
-        super(SparseConv2d, self).__init__(
+        super().__init__(
             in_channels,
             out_channels,
             kernel_size,
@@ -239,6 +244,9 @@ class SparseConv2d(nn.Conv2d):
     def get_sparse_weights(self) -> Tensor:
         """
         Get the sparse weight.
+
+        Returns:
+            Tensor: The pruned weight.
         """
         update = self.current_step_num % self.mask_update_every_step_num == 0
         weight, self.mask = SparseStrategy.apply(self.weight, self.sparsity_rate, self.mask, update)
@@ -280,10 +288,18 @@ class SparseConv2d(nn.Conv2d):
         Returns:
             Tensor: The pruned weight.
         """
-        return self.get_sparse_weights() 
+        return self.get_sparse_weights()
 
 
 class SparseLinear(nn.Linear):
+    """
+    Linear module with the proposed pruning scheme.
+
+    Args:
+        sparsity_rate (float): The target sparsity rate. Default: 0.5.
+        mask_update_every_step_num (int): The number of training steps to update
+                                          the mask once. Default: 2000.
+    """
 
     def __init__(
         self,
@@ -291,27 +307,67 @@ class SparseLinear(nn.Linear):
         out_features: int,
         bias: bool = True,
         sparsity_rate: float = 0.5,
+        mask_update_every_step_num: int = 2000,
         **kwargs
     ) -> None:
-        super(SparseLinear, self).__init__(in_features, out_features, bias = bias)
+        super().__init__(in_features, out_features, bias = bias)
+
         self.sparsity_rate = sparsity_rate
+        self.mask_update_every_step_num = 2000
+
+        self.current_step_num = 0
+        self.current_epoch = 0
+
         self.mask = None
 
     def get_sparse_weights(self) -> Tensor:
-        weight, self.mask = SparseStrategy.apply(self.weight, self.sparsity_rate, self.mask)
+        """
+        Get the sparse weight.
+
+        Returns:
+            Tensor: The pruned weight.
+        """
+        update = self.current_step_num % self.mask_update_every_step_num == 0
+        weight, self.mask = SparseStrategy.apply(self.weight, self.sparsity_rate, self.mask, update)
         return weight
 
-    def forward(self, x: Tensor, current_step_num: int = 0, current_epoch: int = 0) -> Tensor:
-        w = self.get_sparse_weights()
-        x = F.linear(x, w)
-        return x
+    def forward(self, input: Tensor, current_step_num: int = 0, current_epoch: int = 0) -> Tensor:
+        """
+        Feed-forward phase.
 
-    def __return_sparse_weights__(self) -> Tensor:
-        return self.get_sparse_weights()
+        Args:
+            input (Tensor): The input features.
+            current_step_num (int): Current step number. Default: 0.
+            current_epoch (int): Current epoch number. Default: 0.
+
+        Returns:
+            Tensor: The output feature.
+        """
+        # Record the statistics
+        self.current_step_num = current_step_num
+        self.current_epoch = current_epoch
+        # Get the sparse weight
+        w = self.get_sparse_weights()
+        return F.linear(input, w)
 
     @property
     def actual_sparse_ratio(self) -> float:
+        """
+        The current actual sparse ratio.
+
+        Returns:
+            float: Current sparsity ratio.
+        """
         return 1. - sum(self.mask).sum().item() / self.mask.numel()
+
+    def __return_sparse_weights__(self) -> Tensor:
+        """
+        Get the sparse weight.
+
+        Returns:
+            Tensor: The pruned weight.
+        """
+        return self.get_sparse_weights()
 
 
 def test_sparse_linear() -> None:
