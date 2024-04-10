@@ -4,9 +4,10 @@ Sparsity functions in PyTorch.
 Copyright (c) 2024 Junbo Zhao
 """
 
-# pylint: disable=no-member,invalid-name,redefined-builtin,not-callable,too-many-arguments,unused-argument,missing-function-docstring,abstract-method,cell-var-from-loop,too-many-locals,arguments-differ,unsupported-assignment-operation
+# pylint: disable=no-member,invalid-name,redefined-builtin,not-callable,too-many-arguments,unused-argument,missing-function-docstring,abstract-method,cell-var-from-loop,too-many-locals,arguments-differ,unsupported-assignment-operation,too-many-statements,too-many-instance-attributes
 
-from typing import Tuple, Dict
+from typing import Tuple
+import math
 
 import numpy as np
 import torch
@@ -14,6 +15,25 @@ from torch import autograd, nn, Tensor
 import torch.nn.functional as F
 import torch.utils.checkpoint
 
+
+# PRE-DEFINED HYPER-PARAMETERS
+weight_unit = 8
+block_w = 8
+block_h = 8
+sparsity_option = [0, 1, 2, 4, 8]
+# The possible preserved weights of the block
+sparsity_array = np.array([0, 8, 16, 32, 64])
+
+"""
+weight_unit = 4
+block_w = 4
+block_h = 4
+sparsity_option = [0, 1, 2, 4]
+sparsity_array = np.array([0, 4, 8, 16])
+"""
+
+# ---- Sparsity Utils ----
+# ------------------------
 
 def unstructured_weight_prune(weight: Tensor, ratio: float) -> Tensor:
     """
@@ -42,13 +62,18 @@ def unstructured_weight_prune(weight: Tensor, ratio: float) -> Tensor:
     return mask
 
 
-def get_sparse_mask(weight: Tensor, ratio: float) -> Tuple[Tensor, Tensor]:
+def get_sparse_mask(
+    weight: Tensor,
+    ratio: float,
+    bi_direction: bool = True
+) -> Tuple[Tensor, Tensor]:
     """
     Calculate the sparsity mask.
 
     Args:
         weight (Tensor): The weight to be pruned.
         ratio (float): Unstructured pruning ratio.
+        bi_direction (bool): Whether apply bi-directional pruning. Default: `True`.
 
     Returns:
         Tensor: The N:M pruned weight.
@@ -59,14 +84,6 @@ def get_sparse_mask(weight: Tensor, ratio: float) -> Tuple[Tensor, Tensor]:
         >>> pruned_weight, mask = get_sparse_mask(module.weight, ratio = 0.5)
         >>> actual_sparsity = 1 - mask.sum().item() / mask.numel()
     """
-
-    # PRE-DEFINED HYPER-PARAMETERS
-    weight_unit = 8
-    block_w = 8
-    block_h = 8
-    sparsity_option = [0, 1, 2, 4, 8]
-    # The possible preserved weights of the block
-    sparsity_array = np.array([0, 8, 16, 32, 64])
 
     # Step 1: Generate the mask for unstructured pruning
     # The scheme utilises this mask to determine N:M pruning settings
@@ -137,10 +154,14 @@ def get_sparse_mask(weight: Tensor, ratio: float) -> Tuple[Tensor, Tensor]:
                 confidence = (sub_mask == unstructured_mask_sub_mtx).sum().item() / sub_mask.numel()
                 return sub_mask, confidence
 
-            sub_mask_1, confidence_1 = get_n_m_sparse_mask(False)
-            sub_mask_2, confidence_2 = get_n_m_sparse_mask(True)
-            # Select the pruning scheme that has larger similarity with the unstructured pruning
-            sub_mask = sub_mask_1 if confidence_1 > confidence_2 else sub_mask_2
+            if bi_direction:
+                sub_mask_1, confidence_1 = get_n_m_sparse_mask(False)
+                sub_mask_2, confidence_2 = get_n_m_sparse_mask(True)
+                # Select the pruning scheme that has larger similarity with the unstructured pruning
+                sub_mask = sub_mask_1 if confidence_1 > confidence_2 else sub_mask_2
+
+            else:
+                sub_mask, _ = get_n_m_sparse_mask(False)
 
             # Update the mask
             mask[h_left : h_right, w_left : w_right] = sub_mask
@@ -153,10 +174,16 @@ def get_sparse_mask(weight: Tensor, ratio: float) -> Tuple[Tensor, Tensor]:
     pruned_weight = mask * weight
     return pruned_weight, mask
 
+# ---- End of Sparsity Utils ----
+# -------------------------------
 
-class SparseStrategy(autograd.Function):
+
+# ---- Sparsity Strategy ----
+# ---------------------------
+
+class UnstructuredSparseStrategy(autograd.Function):
     """
-    The pruning strategy.
+    Unstructured sparsity strategy.
     """
 
     @staticmethod
@@ -166,14 +193,14 @@ class SparseStrategy(autograd.Function):
         ratio: float,
         mask: Tensor = None,
         update: bool = False
-        ) -> Tuple[Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor]:
         """
         Prune the weight in the forward phase.
 
         Args:
             weight (Tensor): The weight to be pruned.
             ratio (float): The pruning ratio.
-            mask (Tensor): The previously generated mask. If not given, a new mask
+            mask (Tensor): The existing generated mask. If not given, a new mask
                            will be generated and utilised. Default: `None`.
             update (bool): Whether to update the mask. Default: `False`.
 
@@ -181,12 +208,9 @@ class SparseStrategy(autograd.Function):
             Tensor: The weight pruned with the previous mask.
             Tensor: The mask for the backward phase.
         """
-
-        if mask and not update:
-            pruned_weight = mask * weight
-            return pruned_weight, mask
-
-        return get_sparse_mask(weight, ratio)
+        if mask is None or update:
+            mask = unstructured_weight_prune(weight, ratio)
+        return weight * mask, mask
 
     @staticmethod
     def backward(ctx, grad_output: Tensor, grad_mask: Tensor = None):
@@ -196,14 +220,95 @@ class SparseStrategy(autograd.Function):
         return grad_output, None, None, None, None, None
 
 
+class PatchNMSparseStrategy(autograd.Function):
+    """
+    Patch-based N:M sparsity strategy.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        weight: Tensor,
+        ratio: float,
+        mask: Tensor = None,
+        update: bool = False
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Prune the weight in the forward phase.
+
+        Args:
+            weight (Tensor): The weight to be pruned.
+            ratio (float): The pruning ratio.
+            mask (Tensor): The existing generated mask. If not given, a new mask
+                           will be generated and utilised. Default: `None`.
+            update (bool): Whether to update the mask. Default: `False`.
+            bi_direction (bool): Whether apply bi-directional pruning. Default: `True`.
+
+        Returns:
+            Tensor: The weight pruned with the previous mask.
+            Tensor: The mask for the backward phase.
+        """
+        if mask is None or update:
+            return get_sparse_mask(weight, ratio, bi_direction = False)
+        return weight * mask, mask
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor, grad_mask: Tensor = None):
+        """
+        The backward function.
+        """
+        return grad_output, None, None, None, None, None
+
+
+class BidirectionPatchNMSparseStrategy(PatchNMSparseStrategy):
+    """
+    Bi-directional Patch-based N:M sparsity strategy.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        weight: Tensor,
+        ratio: float,
+        mask: Tensor = None,
+        update: bool = False
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Prune the weight in the forward phase.
+
+        Args:
+            weight (Tensor): The weight to be pruned.
+            ratio (float): The pruning ratio.
+            mask (Tensor): The existing generated mask. If not given, a new mask
+                           will be generated and utilised. Default: `None`.
+            update (bool): Whether to update the mask. Default: `False`.
+            bi_direction (bool): Whether apply bi-directional pruning. Default: `True`.
+
+        Returns:
+            Tensor: The weight pruned with the previous mask.
+            Tensor: The mask for the backward phase.
+        """
+        if mask is None or update:
+            return get_sparse_mask(weight, ratio, bi_direction = True)
+        return weight * mask, mask
+
+# ---- End of Sparsity Strategy ----
+# ----------------------------------
+
+
+# ---- Sparse Module ----
+# -----------------------
+
 class SparseConv2d(nn.Conv2d):
     """
-    2D convolution with the proposed pruning scheme.
+    2D sparse convolution.
 
     Args:
-        sparsity_rate (float): The target sparsity rate. Default: 0.5.
-        mask_update_every_step_num (int): The number of training steps to update
-                                          the mask once. Default: 2000.
+        sparsity_rate (float): The target sparsity rate. Default: 0.75.
+        sparsity_strategy (str): The applied sparsity strategy.
+                                 Choices: ["unstructured", "patch_n_m", "bidirection_patch_n_m"].
+                                 Default: "bidirection_patch_n_m".
+        mask_update_step (int): The number of training steps to update the mask. Default: -1.
     """
 
     def __init__(
@@ -217,8 +322,12 @@ class SparseConv2d(nn.Conv2d):
         groups = 1,
         bias: bool = True,
         padding_mode: str = "zeros",
-        sparsity_rate: float = 0.5,
-        mask_update_every_step_num: int = 2000,
+
+        # Sparsity Settings
+        sparsity_rate: float = 0.75,
+        sparsity_strategy: str = "bidirection_patch_n_m",
+        mask_update_step: int = -1,
+
         **kwargs
     ) -> None:
         super().__init__(
@@ -234,9 +343,22 @@ class SparseConv2d(nn.Conv2d):
             **kwargs
         )
 
+        # Sparsity Settings
         self.sparsity_rate = sparsity_rate
-        self.mask_update_every_step_num = 2000
+        self.sparsity_strategy = sparsity_strategy
 
+        if sparsity_strategy == "unstructured":
+            self.sparsity_func = UnstructuredSparseStrategy
+        elif sparsity_strategy == "patch_n_m":
+            self.sparsity_func = PatchNMSparseStrategy
+        elif sparsity_strategy == "bidirection_patch_n_m":
+            self.sparsity_func = BidirectionPatchNMSparseStrategy
+        else:
+            print(f"Invalid sparsity strategy: {sparsity_strategy}")
+
+        self.mask_update_step = math.inf if mask_update_step == -1 else mask_update_step
+
+        # Records
         self.current_step_num = 0
         self.current_epoch = 0
 
@@ -250,9 +372,12 @@ class SparseConv2d(nn.Conv2d):
         Returns:
             Tensor: The pruned weight.
         """
-        update = self.current_step_num % self.mask_update_every_step_num == 0
-        weight, mask = SparseStrategy.apply(
-            self.weight, self.sparsity_rate, None if self.to_init_mask else self.mask, update)
+        weight, mask = self.sparsity_func.apply(
+            self.weight,
+            self.sparsity_rate,
+            None if self.to_init_mask else self.mask,
+            self.current_step_num % self.mask_update_step == 0
+        )
         self.mask = nn.Parameter(mask)
         self.to_init_mask = False
         return weight
@@ -298,12 +423,14 @@ class SparseConv2d(nn.Conv2d):
 
 class SparseLinear(nn.Linear):
     """
-    Linear module with the proposed pruning scheme.
+    Sparse Linear.
 
     Args:
-        sparsity_rate (float): The target sparsity rate. Default: 0.5.
-        mask_update_every_step_num (int): The number of training steps to update
-                                          the mask once. Default: 2000.
+        sparsity_rate (float): The target sparsity rate. Default: 0.75.
+        sparsity_strategy (str): The applied sparsity strategy.
+                                 Choices: ["unstructured", "patch_n_m", "bidirection_patch_n_m"].
+                                 Default: "bidirection_patch_n_m".
+        mask_update_step (int): The number of training steps to update the mask. Default: -1.
     """
 
     def __init__(
@@ -311,15 +438,32 @@ class SparseLinear(nn.Linear):
         in_features: int,
         out_features: int,
         bias: bool = True,
-        sparsity_rate: float = 0.5,
-        mask_update_every_step_num: int = 2000,
+
+        # Sparsity Settings
+        sparsity_rate: float = 0.75,
+        sparsity_strategy: str = "bidirection_patch_n_m",
+        mask_update_step: int = -1,
+
         **kwargs
     ) -> None:
         super().__init__(in_features, out_features, bias = bias)
 
+        # Sparsity Settings
         self.sparsity_rate = sparsity_rate
-        self.mask_update_every_step_num = 2000
+        self.sparsity_strategy = sparsity_strategy
 
+        if sparsity_strategy == "unstructured":
+            self.sparsity_func = UnstructuredSparseStrategy
+        elif sparsity_strategy == "patch_n_m":
+            self.sparsity_func = PatchNMSparseStrategy
+        elif sparsity_strategy == "bidirection_patch_n_m":
+            self.sparsity_func = BidirectionPatchNMSparseStrategy
+        else:
+            print(f"Invalid sparsity strategy: {sparsity_strategy}")
+
+        self.mask_update_step = math.inf if mask_update_step == -1 else mask_update_step
+
+        # Records
         self.current_step_num = 0
         self.current_epoch = 0
 
@@ -333,9 +477,12 @@ class SparseLinear(nn.Linear):
         Returns:
             Tensor: The pruned weight.
         """
-        update = self.current_step_num % self.mask_update_every_step_num == 0
-        weight, mask = SparseStrategy.apply(
-            self.weight, self.sparsity_rate, None if self.to_init_mask else self.mask, update)
+        weight, mask = self.sparsity_func.apply(
+            self.weight,
+            self.sparsity_rate,
+            None if self.to_init_mask else self.mask,
+            self.current_step_num % self.mask_update_step == 0
+        )
         self.mask = nn.Parameter(mask)
         self.to_init_mask = False
         return weight
@@ -378,10 +525,12 @@ class SparseLinear(nn.Linear):
         """
         return self.get_sparse_weights()
 
+# ---- End of Sparse Module ----
+# ------------------------------
 
 def test_sparse_linear() -> None:
     device = torch.device("cuda")
-    module = SparseLinear(32, 32, True, sparsity_rate = 0.8).to(device)
+    module = SparseLinear(32, 32, True, sparsity_rate = 0.875).to(device)
     input = torch.randn((4, 32)).to(device)
     output = module(input)
     loss = output.sum()
@@ -391,7 +540,7 @@ def test_sparse_linear() -> None:
 
 def test_sparse_conv() -> None:
     device = torch.device("cuda")
-    module = SparseConv2d(64, 128, (3, 3), sparsity_rate = 0.6).to(device)
+    module = SparseConv2d(64, 128, (3, 3), sparsity_rate = 0.875).to(device)
     input = torch.randn((64, 32, 32)).to(device)
     output = module(input)
     loss = output.sum()
